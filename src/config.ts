@@ -26,6 +26,7 @@ export const EnvSchema = z.object({
 	OPENAI_COMPATIBLE_API_URL: z.string().url().optional().describe('URL for OpenAI-compatible API'),
 	OPENAI_COMPATIBLE_API_KEY: z.string().optional().describe('API Key for OpenAI-compatible API'),
 	OPENAI_COMPATIBLE_MODEL: z.string().optional().describe('Model name for OpenAI-compatible API'),
+	OPENAI_COMPATIBLE_VISION: z.coerce.boolean().default(false).describe('Whether the OpenAI-compatible model supports vision/image input for combined OCR+classification'),
 });
 
 export type EnvConfig = z.infer<typeof EnvSchema>;

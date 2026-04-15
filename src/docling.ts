@@ -36,6 +36,8 @@ export class DoclingClient {
 			method: 'POST',
 			headers,
 			body: JSON.stringify(payload),
+			signal: AbortSignal.timeout(720000), // 12 minutes timeout
+			verbose: true,
 		});
 
 		if (!response.ok) {
