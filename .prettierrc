@@ -1,0 +1,7 @@
+{
+  "singleQuote": true,
+  "useTabs": true,
+  "printWidth": 120,
+  "preferSingleLine": true,
+  "memberExpression.linePerExpression": true
+}
