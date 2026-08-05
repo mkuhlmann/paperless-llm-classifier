@@ -27,7 +27,7 @@ async function pdfToImages(pdfBuffer: Buffer): Promise<Array<{ buffer: Buffer; m
 
 		if (exitCode !== 0) {
 			const stderr = await new Response(proc.stderr).text();
-			throw new Error(`pdftoppm failed (exit ${exitCode}): ${stderr.trim()}. Is poppler-utils installed? (apt install poppler-utils)`);
+			throw new Error(`pdftoppm failed (exit ${exitCode}): ${stderr.trim()}. Is poppler-utils installed? (e.g. apt/apk install poppler-utils, or brew install poppler)`);
 		}
 
 		const glob = new Bun.Glob('page-*.png');
