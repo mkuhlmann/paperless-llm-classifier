@@ -4,12 +4,8 @@ import { z } from 'zod';
 import { config } from './config';
 import { logger } from './log';
 import { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
-import type { GoogleGenerativeAIModelId } from '@ai-sdk/google/internal';
-import {
-	buildMetadataSystemPrompt,
-	buildMetadataUserPrompt,
-	buildVisionMetadataSystemPrompt,
-} from './prompts';
+import type { GoogleModelId } from '@ai-sdk/google/internal';
+import { buildMetadataSystemPrompt, buildMetadataUserPrompt, buildVisionMetadataSystemPrompt } from './prompts';
 
 const google = createGoogleGenerativeAI({
 	apiKey: config.GOOGLE_GENERATIVE_AI_API_KEY,
@@ -26,7 +22,7 @@ const llamaModel = config.OPENAI_COMPATIBLE_API_URL
 		})
 	: null;
 
-async function determinateModel(fallback: GoogleGenerativeAIModelId = 'gemini-3-flash-preview') {
+async function determinateModel(fallback: GoogleModelId = config.GOOGLE_AI_MODEL) {
 	if (llamaModel && config.OPENAI_COMPATIBLE_API_URL) {
 		try {
 			const controller = new AbortController();
@@ -122,10 +118,6 @@ export class LlmClient {
 		availableTags: string[],
 		customFieldsSpec: string,
 	): Promise<VisionExtractedMetadata> {
-		if (!llamaModel) {
-			throw new Error('Vision extraction requires OPENAI_COMPATIBLE_API_URL to be configured.');
-		}
-
 		const systemPrompt = buildVisionMetadataSystemPrompt(
 			availableCorrespondents,
 			availableDocumentTypes,
@@ -136,10 +128,11 @@ export class LlmClient {
 
 		Bun.write('logs/last_prompt.txt', `${systemPrompt}\n\n[${pages.length} page image(s)]\n${userText}`);
 
-		logger.info(`Sending vision OCR+metadata request to ${llamaModel.modelId} (${pages.length} page(s))...`);
+		const model = await determinateModel();
+		logger.info(`Sending vision OCR+metadata request to ${model.modelId} (${pages.length} page(s))...`);
 
 		const result = await generateText({
-			model: llamaModel,
+			model,
 			output: Output.object({
 				schema: visionExtractedMetadataSchema,
 			}),

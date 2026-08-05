@@ -37,6 +37,8 @@ export class DoclingClient {
 			headers,
 			body: JSON.stringify(payload),
 			signal: AbortSignal.timeout(720000), // 12 minutes timeout
+			// @ts-ignore bun internal
+			timeout: false,
 			verbose: true,
 		});
 

@@ -13,13 +13,28 @@ export const EnvSchema = z.object({
 		.describe('Base URL of Docling service')
 		.transform((url) => url.replace(/\/$/, '')),
 	GOOGLE_GENERATIVE_AI_API_KEY: z.string().min(1).describe('API Key for Gemini'),
-	AI_MODEL: z.string().default('gemini-2.5-flash').describe('The AI model to use'),
+	GOOGLE_AI_MODEL: z
+		.string()
+		.default('gemini-2.5-flash')
+		.describe('Gemini model to use — as the primary model, or as fallback when OPENAI_COMPATIBLE_API_URL is unset/unreachable'),
 	POLL_INTERVAL_MS: z.coerce.number().int().positive().default(10000),
 	TAG_AI_AUTO: z.string().default('ai-auto'),
 	TAG_AI_OCR_AUTO: z.string().default('ai-ocr-auto'),
 	TAG_AI_OCR_DONE: z.string().default('ai-ocr-done'),
 	TAG_AI_DONE: z.string().min(1).optional(),
 	TAG_AI_FAILED: z.string().default('ai-failed'),
+	OCR_MODE: z
+		.enum(['auto', 'force', 'skip'])
+		.default('auto')
+		.describe(
+			'auto: skip OCR for born-digital PDFs and use their embedded text; force: always OCR; skip: never OCR',
+		),
+	OCR_MIN_CHARS_PER_PAGE: z
+		.coerce.number()
+		.int()
+		.nonnegative()
+		.default(100)
+		.describe('Visible characters per page above which a PDF is considered born-digital (auto mode)'),
 	ALLOW_NEW_CORRESPONDENT: z.coerce.boolean().default(false),
 	LLM_ANSWER_LANGUAGE: z.string().default('English').describe('Language for LLM answers'),
 	OWN_NAME: z.string().describe('The name of the user, to avoid including it in metadata extraction').optional(),
