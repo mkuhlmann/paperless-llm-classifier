@@ -1,8 +1,9 @@
 {
-	"name": "paperless-ai",
+	"name": "paperless-llm-classifier",
 	"module": "index.ts",
 	"type": "module",
 	"private": true,
+	"license": "MIT",
 	"scripts": {
 		"dev": "bun run --watch src/index.ts"
 	},

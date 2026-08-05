@@ -12,7 +12,7 @@ import type { ExtractedMetadata } from './llm';
 import { analyzePdfText, extractPdfText } from './pdf';
 
 async function pdfToImages(pdfBuffer: Buffer): Promise<Array<{ buffer: Buffer; mimeType: string }>> {
-	const tmpDir = join(tmpdir(), `paperless-ai-${randomBytes(8).toString('hex')}`);
+	const tmpDir = join(tmpdir(), `paperless-llm-classifier-${randomBytes(8).toString('hex')}`);
 	const pdfPath = join(tmpDir, 'document.pdf');
 
 	try {
@@ -79,7 +79,12 @@ type OcrPlan =
 	| { action: 'none' }; // OCR_MODE=skip on a non-PDF: nothing to extract, nothing to OCR
 
 async function planOcr(doc: Document): Promise<OcrPlan> {
+	logger
+		.withMetadata({ ocrMode: config.OCR_MODE, mimeType: doc.mime_type })
+		.info(`[Doc #${doc.id}] PLAN: evaluating OCR strategy`);
+
 	if (config.OCR_MODE === 'force') {
+		logger.info(`[Doc #${doc.id}] PLAN → ocr (OCR_MODE=force: always OCR, regardless of document content)`);
 		return { action: 'ocr' };
 	}
 
@@ -87,40 +92,48 @@ async function planOcr(doc: Document): Promise<OcrPlan> {
 
 	if (config.OCR_MODE === 'skip') {
 		if (!isPdf) {
+			logger.info(`[Doc #${doc.id}] PLAN → none (OCR_MODE=skip, non-PDF: nothing to extract, nothing to OCR)`);
 			return { action: 'none' };
 		}
 		try {
 			const buffer = await paperless.downloadDocument(doc.id, true);
 			const text = await extractPdfText(buffer);
+			logger.info(
+				`[Doc #${doc.id}] PLAN → embedded (OCR_MODE=skip, PDF: using ${text.length} chars already in the file, OCR never runs)`,
+			);
 			return { action: 'embedded', text };
 		} catch (err) {
 			logger
 				.withError(err as Error)
-				.warn(`[Doc #${doc.id}] Failed to read embedded PDF text under OCR_MODE=skip; treating as empty.`);
+				.warn(`[Doc #${doc.id}] PLAN → embedded (empty) — failed to read embedded PDF text under OCR_MODE=skip; treating as empty.`);
 			return { action: 'embedded', text: '' };
 		}
 	}
 
 	// auto
 	if (!isPdf) {
+		logger.info(`[Doc #${doc.id}] PLAN → ocr (OCR_MODE=auto, non-PDF: born-digital detection only applies to PDFs)`);
 		return { action: 'ocr' };
 	}
 	try {
 		const buffer = await paperless.downloadDocument(doc.id, true);
 		const analysis = await analyzePdfText(buffer);
+		logger
+			.withMetadata(analysis)
+			.info(`[Doc #${doc.id}] PLAN: PDF text analysis (threshold ${config.OCR_MIN_CHARS_PER_PAGE} visible chars/page)`);
 		if (analysis.visibleCharsPerPage >= config.OCR_MIN_CHARS_PER_PAGE) {
 			logger.info(
-				`[Doc #${doc.id}] Born-digital PDF detected (${Math.round(analysis.visibleCharsPerPage)} visible chars/page across ${analysis.pageCount} page(s)); skipping OCR.`,
+				`[Doc #${doc.id}] PLAN → embedded (OCR_MODE=auto: born-digital PDF detected — ${Math.round(analysis.visibleCharsPerPage)} visible chars/page across ${analysis.pageCount} page(s); skipping OCR)`,
 			);
 			const text = await extractPdfText(buffer);
 			return { action: 'embedded', text };
 		}
 		logger.info(
-			`[Doc #${doc.id}] PDF needs OCR (${Math.round(analysis.visibleCharsPerPage)} visible chars/page across ${analysis.pageCount} page(s)).`,
+			`[Doc #${doc.id}] PLAN → ocr (OCR_MODE=auto: scanned PDF — only ${Math.round(analysis.visibleCharsPerPage)} visible chars/page across ${analysis.pageCount} page(s); OCR needed)`,
 		);
 		return { action: 'ocr', buffer };
 	} catch (err) {
-		logger.withError(err as Error).warn(`[Doc #${doc.id}] PDF text analysis failed; falling back to OCR.`);
+		logger.withError(err as Error).warn(`[Doc #${doc.id}] PLAN → ocr (fallback) — PDF text analysis failed; falling back to OCR.`);
 		return { action: 'ocr' };
 	}
 }
@@ -229,7 +242,9 @@ async function runMetadataPhase(
 		documentContent = doc.title;
 	}
 
-	logger.info(`[Doc #${doc.id}] Starting LLM analysis...`);
+	logger
+		.withMetadata({ contentLength: documentContent.length, hasOcrAuto })
+		.info(`[Doc #${doc.id}] Starting LLM analysis...`);
 
 	const [allTags, allCorrs, allTypes, allFields] = await Promise.all([
 		paperless.getTags(),
@@ -277,19 +292,37 @@ export async function processDocument(
 	const isVisionMode = config.OPENAI_COMPATIBLE_VISION && !!config.OPENAI_COMPATIBLE_API_URL;
 	let errorOccurred = false;
 
+	logger
+		.withMetadata({
+			mimeType: doc.mime_type,
+			tags: doc.tags,
+			hasOcrAuto,
+			hasAiAuto,
+			isVisionMode,
+			ocrMode: config.OCR_MODE,
+		})
+		.info(`[Doc #${doc.id}] WORKFLOW: routing inputs`);
+
 	try {
 		// Decide up front whether this document even needs OCR — a born-digital PDF under
 		// OCR_MODE=auto (or any PDF under OCR_MODE=skip) never reaches Docling or the vision
 		// rasterizer below; it goes straight to metadata extraction using its own embedded text.
-		const ocrPlan: OcrPlan = hasOcrAuto ? await planOcr(doc) : { action: 'none' };
+		let ocrPlan: OcrPlan;
+		if (hasOcrAuto) {
+			ocrPlan = await planOcr(doc);
+		} else {
+			ocrPlan = { action: 'none' };
+			logger.info(`[Doc #${doc.id}] WORKFLOW: 'ai-ocr-auto' not present — OCR phase skipped entirely.`);
+		}
 
 		if (hasOcrAuto && hasAiAuto && isVisionMode && ocrPlan.action === 'ocr') {
+			logger.info(`[Doc #${doc.id}] WORKFLOW → PATH=VISION (combined OCR + metadata extraction in one LLM call)`);
 			// Vision path: combined OCR + metadata extraction in one LLM call
 			const { pages, supported } = await getDocumentImages(doc, ocrPlan.buffer);
 
 			if (!supported) {
 				logger.warn(
-					`[Doc #${doc.id}] MIME type '${doc.mime_type}' is not supported for vision mode. Falling back to Docling + text LLM.`,
+					`[Doc #${doc.id}] WORKFLOW: MIME type '${doc.mime_type}' is not supported for vision mode. Falling back to Docling + text LLM.`,
 				);
 				// Fall through to standard two-phase path below
 				await runStandardPath(
@@ -297,7 +330,9 @@ export async function processDocument(
 					tagAiAuto, tagAiOcrAuto, tagAiOcrDone, tagAiDone, tagAiFailed,
 				);
 			} else {
-				logger.info(`[Doc #${doc.id}] Vision OCR+metadata extraction (${pages.length} page(s))...`);
+				logger
+					.withMetadata({ pageCount: pages.length, mimeType: doc.mime_type })
+					.info(`[Doc #${doc.id}] Vision OCR+metadata extraction starting...`);
 
 				const [allTags, allCorrs, allTypes, allFields] = await Promise.all([
 					paperless.getTags(),
@@ -335,8 +370,9 @@ export async function processDocument(
 				);
 			}
 		} else {
-			// Standard two-phase path — also handles the 'embedded' (born-digital PDF) and 'none'
-			// (OCR_MODE=skip on a non-PDF) outcomes from planOcr, since neither needs Docling or vision.
+			logger
+				.withMetadata({ ocrPlanAction: ocrPlan.action })
+				.info(`[Doc #${doc.id}] WORKFLOW → PATH=STANDARD (also covers 'embedded' and 'none' OCR outcomes, which never need Docling or vision)`);
 			await runStandardPath(
 				doc, hasOcrAuto, hasAiAuto, ocrPlan,
 				tagAiAuto, tagAiOcrAuto, tagAiOcrDone, tagAiDone, tagAiFailed,
@@ -376,13 +412,15 @@ async function runStandardPath(
 
 	if (hasOcrAuto) {
 		if (ocrPlan.action === 'embedded') {
-			logger.info(`[Doc #${doc.id}] Using the PDF's own embedded text (${ocrPlan.text.length} chars); OCR not needed.`);
+			logger.info(
+				`[Doc #${doc.id}] PHASE 1 → SUB-PATH=EMBEDDED: using the PDF's own text (${ocrPlan.text.length} chars); OCR not needed.`,
+			);
 			await paperless.setDocumentContent(doc.id, ocrPlan.text);
 			await paperless.addTagToDocument(doc.id, tagAiOcrDone.id);
 			documentContent = ocrPlan.text;
 			ranOcr = true;
 		} else if (ocrPlan.action === 'ocr') {
-			logger.info(`[Doc #${doc.id}] Doing OCR via Docling...`);
+			logger.info(`[Doc #${doc.id}] PHASE 1 → SUB-PATH=DOCLING: doing OCR via Docling...`);
 
 			const extension =
 				typeof doc.original_file_name === 'string' && doc.original_file_name.length > 0
@@ -390,6 +428,9 @@ async function runStandardPath(
 					: 'pdf';
 
 			const fileBuffer = ocrPlan.buffer ?? (await paperless.downloadDocument(doc.id, true));
+			logger
+				.withMetadata({ reusedPredownloadedBuffer: !!ocrPlan.buffer })
+				.info(`[Doc #${doc.id}] Sending to Docling as doc_${doc.id}.${extension}...`);
 			const markdown = await docling.processFile(fileBuffer, `doc_${doc.id}.${extension}`);
 
 			await paperless.setDocumentContent(doc.id, markdown);
@@ -399,16 +440,22 @@ async function runStandardPath(
 		} else {
 			// 'none': OCR_MODE=skip on a non-PDF document. Mirrors Paperless's own `off` mode, where
 			// image documents simply get no text. tagAiOcrDone is intentionally not applied — no OCR ran.
-			logger.info(`[Doc #${doc.id}] OCR_MODE=skip: no OCR performed for non-PDF document.`);
+			logger.info(`[Doc #${doc.id}] PHASE 1 → SUB-PATH=NONE: OCR_MODE=skip, no OCR performed for non-PDF document.`);
 		}
+	} else {
+		logger.info(`[Doc #${doc.id}] PHASE 1 skipped: 'ai-ocr-auto' not present.`);
 	}
 
 	// Phase 2: Metadata via LLM
 	if (hasAiAuto) {
+		logger
+			.withMetadata({ contentSource: documentContent !== undefined ? 'phase1-output' : 'fetched-from-paperless' })
+			.info(`[Doc #${doc.id}] PHASE 2: metadata extraction ('ai-auto' present)`);
 		const content = documentContent ?? (await paperless.getDocumentText(doc.id));
 		await runMetadataPhase(doc, content, tagAiAuto, tagAiOcrAuto, tagAiOcrDone, tagAiDone, tagAiFailed, ranOcr);
 	} else if (hasOcrAuto) {
 		// Only OCR was requested. Remove the trigger tag since phase 2 won't patch
+		logger.info(`[Doc #${doc.id}] PHASE 2 skipped: 'ai-auto' not present. Removing 'ai-ocr-auto' trigger tag.`);
 		await paperless.removeTagFromDocument(doc.id, tagAiOcrAuto.id);
 	}
 }

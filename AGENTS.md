@@ -1,4 +1,4 @@
-# Agent Guide - paperless-ai
+# Agent Guide - paperless-llm-classifier
 
 This document provides instructions and guidelines for agentic coding agents operating in this repository.
 

@@ -1,4 +1,4 @@
-# paperless-ai
+# paperless-llm-classifier
 
 AI-powered document processing for [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx).
 
@@ -45,9 +45,17 @@ bun dev
 
 ### Docker
 
+Prebuilt multi-arch images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry on every push to `main` and on version tags — see [`.github/workflows/docker-build.yml`](.github/workflows/docker-build.yml).
+
 ```bash
-docker build -t paperless-ai .
-docker run --env-file .env paperless-ai
+docker run --env-file .env ghcr.io/mkuhlmann/paperless-llm-classifier:latest
+```
+
+Or build locally:
+
+```bash
+docker build -t paperless-llm-classifier .
+docker run --env-file .env paperless-llm-classifier
 ```
 
 The image installs `poppler-utils` in the runtime stage, so vision mode works out of the box.
@@ -192,3 +200,7 @@ bun run src/index.ts process <document_id>
 - **OpenAI-compatible requests silently going to Gemini** — the `/models` reachability probe (3s timeout) failed; check the logs for a `"Llama inference not reachable, falling back to Gemini"` warning.
 - **Inspecting what was actually sent to the LLM** — every request overwrites `logs/last_prompt.txt` with the exact system + user prompt used for that call.
 - **A born-digital PDF isn't being detected** — check the info-level log line for that document (`Born-digital PDF detected (N visible chars/page ...)` vs `PDF needs OCR (...)`). If a text-light document is landing on the wrong side of the threshold, adjust `OCR_MIN_CHARS_PER_PAGE`.
+
+## License
+
+[MIT](LICENSE)
