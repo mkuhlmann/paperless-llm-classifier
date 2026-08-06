@@ -7,7 +7,7 @@ import { logger } from './log';
 import { paperless } from './paperless';
 import type { Tag, Document, Correspondent, DocumentType, CustomField } from './paperless';
 import { docling } from './docling';
-import { llm } from './llm';
+import { llm, visionAvailable } from './llm';
 import type { ExtractedMetadata } from './llm';
 import { analyzePdfText, extractPdfText } from './pdf';
 
@@ -289,7 +289,7 @@ export async function processDocument(
 
 	const hasOcrAuto = doc.tags.includes(tagAiOcrAuto.id);
 	const hasAiAuto = doc.tags.includes(tagAiAuto.id);
-	const isVisionMode = config.OPENAI_COMPATIBLE_VISION && !!config.OPENAI_COMPATIBLE_API_URL;
+	const isVisionMode = visionAvailable;
 	let errorOccurred = false;
 
 	logger
@@ -420,6 +420,12 @@ async function runStandardPath(
 			documentContent = ocrPlan.text;
 			ranOcr = true;
 		} else if (ocrPlan.action === 'ocr') {
+			if (!config.DOCLING_URL) {
+				throw new Error(
+					`[Doc #${doc.id}] needs OCR, but no OCR route is available: set OPENAI_COMPATIBLE_VISION=true (vision mode) or configure DOCLING_URL.`,
+				);
+			}
+
 			logger.info(`[Doc #${doc.id}] PHASE 1 → SUB-PATH=DOCLING: doing OCR via Docling...`);
 
 			const extension =

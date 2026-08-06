@@ -2,13 +2,12 @@ import { config } from './config';
 import { logger } from './log';
 
 export class DoclingClient {
-	private url: string;
-
-	constructor() {
-		this.url = config.DOCLING_URL + '/v1/convert/source';
-	}
-
 	async processFile(fileBuffer: Buffer, filename: string): Promise<string> {
+		if (!config.DOCLING_URL) {
+			throw new Error('DOCLING_URL is not configured.');
+		}
+		const url = config.DOCLING_URL + '/v1/convert/source';
+
 		logger.info(`Sending ${filename} to Docling for OCR...`);
 		const base64Data = fileBuffer.toString('base64');
 
@@ -32,7 +31,7 @@ export class DoclingClient {
 			'Content-Type': 'application/json',
 			Accept: 'application/json',
 		};
-		const response = await fetch(this.url, {
+		const response = await fetch(url, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify(payload),

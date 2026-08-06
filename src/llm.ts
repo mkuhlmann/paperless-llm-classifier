@@ -1,48 +1,93 @@
-import { generateText, Output } from 'ai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { generateText, Output, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import { config } from './config';
 import { logger } from './log';
 import { OpenAICompatibleChatLanguageModel } from '@ai-sdk/openai-compatible';
-import type { GoogleModelId } from '@ai-sdk/google/internal';
 import { buildMetadataSystemPrompt, buildMetadataUserPrompt, buildVisionMetadataSystemPrompt } from './prompts';
 
-const google = createGoogleGenerativeAI({
-	apiKey: config.GOOGLE_GENERATIVE_AI_API_KEY,
-});
+interface Provider {
+	name: 'primary' | 'secondary';
+	model: LanguageModel;
+	modelId: string;
+	vision: boolean;
+}
 
-const llamaModel = config.OPENAI_COMPATIBLE_API_URL
-	? new OpenAICompatibleChatLanguageModel(config.OPENAI_COMPATIBLE_MODEL ?? 'unknown', {
+function buildProvider(
+	name: Provider['name'],
+	url: string,
+	apiKey: string | undefined,
+	modelId: string,
+	vision: boolean,
+): Provider {
+	return {
+		name,
+		modelId,
+		vision,
+		model: new OpenAICompatibleChatLanguageModel(modelId, {
 			provider: 'openai-compatible',
-			url: ({ path }) => `${config.OPENAI_COMPATIBLE_API_URL}${path}`,
-			headers: () => ({
-				Authorization: `Bearer ${config.OPENAI_COMPATIBLE_API_KEY}`,
-			}),
+			url: ({ path }) => `${url}${path}`,
+			headers: () => (apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
 			supportsStructuredOutputs: true,
-		})
-	: null;
+		}),
+	};
+}
 
-async function determinateModel(fallback: GoogleModelId = config.GOOGLE_AI_MODEL) {
-	if (llamaModel && config.OPENAI_COMPATIBLE_API_URL) {
+const providers: Provider[] = [
+	buildProvider(
+		'primary',
+		config.OPENAI_COMPATIBLE_API_URL,
+		config.OPENAI_COMPATIBLE_API_KEY,
+		config.OPENAI_COMPATIBLE_MODEL,
+		config.OPENAI_COMPATIBLE_VISION,
+	),
+	...(config.OPENAI_COMPATIBLE_SECONDARY_API_URL && config.OPENAI_COMPATIBLE_SECONDARY_MODEL
+		? [
+				buildProvider(
+					'secondary',
+					config.OPENAI_COMPATIBLE_SECONDARY_API_URL,
+					config.OPENAI_COMPATIBLE_SECONDARY_API_KEY,
+					config.OPENAI_COMPATIBLE_SECONDARY_MODEL,
+					config.OPENAI_COMPATIBLE_SECONDARY_VISION,
+				),
+			]
+		: []),
+];
+
+/** True when at least one configured provider can take image input (for vision mode). */
+export const visionAvailable = providers.some((p) => p.vision);
+
+/**
+ * Runs `fn` against each eligible provider in order (primary first, then secondary), returning the
+ * first success. A provider is only eligible when `needsVision` is false or the provider supports
+ * vision. Failures are logged and the next provider is tried; if every candidate fails, the last
+ * error is rethrown.
+ */
+async function withFallback<T>(needsVision: boolean, fn: (model: LanguageModel) => Promise<T>): Promise<T> {
+	const candidates = providers.filter((p) => !needsVision || p.vision);
+	if (candidates.length === 0) {
+		throw new Error(
+			needsVision
+				? 'No configured LLM provider supports vision. Set OPENAI_COMPATIBLE_VISION=true (or the secondary equivalent).'
+				: 'No LLM provider configured.',
+		);
+	}
+
+	let lastError: unknown;
+	for (const [index, provider] of candidates.entries()) {
+		logger.info(`Sending request to ${provider.name} provider (${provider.modelId})...`);
 		try {
-			const controller = new AbortController();
-			const timeoutId = setTimeout(() => controller.abort(), 3000);
-			const response = await fetch(`${config.OPENAI_COMPATIBLE_API_URL}/models`, {
-				signal: controller.signal,
-				headers: {
-					Authorization: `Bearer ${config.OPENAI_COMPATIBLE_API_KEY}`,
-				},
-				method: 'GET',
-			});
-			clearTimeout(timeoutId);
-			if (response.ok) {
-				return llamaModel;
-			}
+			return await fn(provider.model);
 		} catch (error) {
-			logger.withError(error as Error).warn('Llama inference not reachable, falling back to Gemini');
+			lastError = error;
+			const nextProvider = candidates[index + 1];
+			if (nextProvider) {
+				logger
+					.withError(error as Error)
+					.warn(`Provider ${provider.name} (${provider.modelId}) failed, trying ${nextProvider.name}...`);
+			}
 		}
 	}
-	return google(fallback);
+	throw lastError;
 }
 
 export const extractedMetadataSchema = z.object({
@@ -94,17 +139,16 @@ export class LlmClient {
 
 		Bun.write('logs/last_prompt.txt', `${systemPrompt}\n\n${userPrompt}`);
 
-		const model = await determinateModel();
-		logger.info(`Sending metadata extraction request to ${model.modelId}...`);
-
-		const result = await generateText({
-			model: model,
-			output: Output.object({
-				schema: extractedMetadataSchema,
+		const result = await withFallback(false, (model) =>
+			generateText({
+				model,
+				output: Output.object({
+					schema: extractedMetadataSchema,
+				}),
+				system: systemPrompt,
+				prompt: userPrompt,
 			}),
-			system: systemPrompt,
-			prompt: userPrompt,
-		});
+		);
 
 		logger.info('Received extracted metadata from LLM.');
 		return result.output;
@@ -128,29 +172,28 @@ export class LlmClient {
 
 		Bun.write('logs/last_prompt.txt', `${systemPrompt}\n\n[${pages.length} page image(s)]\n${userText}`);
 
-		const model = await determinateModel();
-		logger.info(`Sending vision OCR+metadata request to ${model.modelId} (${pages.length} page(s))...`);
-
-		const result = await generateText({
-			model,
-			output: Output.object({
-				schema: visionExtractedMetadataSchema,
+		const result = await withFallback(true, (model) =>
+			generateText({
+				model,
+				output: Output.object({
+					schema: visionExtractedMetadataSchema,
+				}),
+				system: systemPrompt,
+				messages: [
+					{
+						role: 'user',
+						content: [
+							...pages.map(({ buffer, mimeType }) => ({
+								type: 'image' as const,
+								image: buffer,
+								mimeType,
+							})),
+							{ type: 'text' as const, text: userText },
+						],
+					},
+				],
 			}),
-			system: systemPrompt,
-			messages: [
-				{
-					role: 'user',
-					content: [
-						...pages.map(({ buffer, mimeType }) => ({
-							type: 'image' as const,
-							image: buffer,
-							mimeType,
-						})),
-						{ type: 'text' as const, text: userText },
-					],
-				},
-			],
-		});
+		);
 
 		logger.info('Received vision OCR+metadata from LLM.');
 		return result.output;

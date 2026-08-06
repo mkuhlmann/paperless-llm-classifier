@@ -18,7 +18,7 @@ This project uses [Bun](https://bun.sh) as its runtime and package manager.
 - `src/index.ts`: Entry point. Manages the polling loop and command-line arguments.
 - `src/paperless.ts`: `PaperlessClient` class for interacting with the Paperless-ngx API.
 - `src/processor.ts`: Core logic for processing documents (OCR, AI metadata extraction).
-- `src/llm.ts`: Integration with Vercel AI SDK (Gemini/OpenAI compatible).
+- `src/llm.ts`: Integration with Vercel AI SDK, via one or two OpenAI-compatible endpoints (primary + optional secondary fallback).
 - `src/docling.ts`: Integration with Docling service for document parsing.
 - `src/config.ts`: Environment variable configuration and validation using Zod.
 - `src/log.ts`: Logging configuration using `loglayer` and `consola`.
@@ -60,5 +60,5 @@ This project uses [Bun](https://bun.sh) as its runtime and package manager.
 
 ### AI Integration
 - Use the **Vercel AI SDK** (`ai` package).
-- Support both Google (Gemini) and OpenAI-compatible providers as configured in `src/llm.ts`.
+- Support a primary and an optional secondary OpenAI-compatible provider as configured in `src/llm.ts`; the secondary is only used as a fallback when the primary call fails.
 - When extracting structured data, use `generateObject` with Zod schemas.
