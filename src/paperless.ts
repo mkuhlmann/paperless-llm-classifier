@@ -168,9 +168,13 @@ export class PaperlessClient {
 	}
 
 	async setDocumentContent(id: number, content: string): Promise<void> {
+		// Paperless rejects content containing null characters (400: "Null characters are not
+		// allowed."). PDF text extraction (and OCR/Docling output) can surface literal \x00 bytes
+		// from malformed embedded fonts/encoding, so strip them before ever reaching the API.
+		const sanitizedContent = content.replace(/\u0000/g, '');
 		await this.request(`/documents/${id}/`, {
 			method: 'PATCH',
-			body: JSON.stringify({ content }),
+			body: JSON.stringify({ content: sanitizedContent }),
 		});
 	}
 
