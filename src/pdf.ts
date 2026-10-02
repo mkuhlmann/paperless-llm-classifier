@@ -43,7 +43,14 @@ export async function analyzePdfText(buffer: Buffer): Promise<PdfTextAnalysis> {
 	// since this runs inside a long-lived poll loop rather than a short script.
 	let doc: Awaited<ReturnType<typeof getDocumentProxy>> | undefined;
 	try {
-		doc = await getDocumentProxy(toDocumentData(buffer));
+		// Only text operators matter here, but getOperatorList() would otherwise fully decode every
+		// embedded image — expensive for scans, and JBIG2 ones fail outright since unpdf's build doesn't
+		// ship pdf.js's jbig2.wasm. maxImageSize: 0 drops all images before decoding; the resulting
+		// per-image "removed" warnings are silenced by keeping verbosity at errors-only.
+		doc = await getDocumentProxy(toDocumentData(buffer), {
+			maxImageSize: 0,
+			verbosity: 0,
+		});
 		const pdfjs = await getResolvedPDFJS();
 		let visibleChars = 0;
 		let invisibleChars = 0;

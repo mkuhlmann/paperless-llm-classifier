@@ -184,9 +184,9 @@ export class LlmClient {
 						role: 'user',
 						content: [
 							...pages.map(({ buffer, mimeType }) => ({
-								type: 'image' as const,
-								image: buffer,
-								mimeType,
+								type: 'file' as const,
+								data: buffer,
+								mediaType: mimeType,
 							})),
 							{ type: 'text' as const, text: userText },
 						],
